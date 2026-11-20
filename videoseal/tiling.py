@@ -92,3 +92,25 @@ def detect_tiled(model, img: torch.Tensor, k: int,
         if (wh, ww) == (h, w):
             break  # larger windows would be the same whole-image crop
     return best
+
+
+@torch.no_grad()
+def embed_dual(model, img: torch.Tensor, msg: torch.Tensor, tile: int = 512, batch: int = 16) -> torch.Tensor:
+    """Two layers carrying the same message: one over the whole image and one per tile.
+
+    The whole-image layer is coarse (the model works at 256x256 and upsamples), so it
+    survives noise and re-photographing; the tiled layer is fine and survives cropping.
+    Both residuals are computed from the clean image and added.
+    """
+    whole = model.embed(img, msgs=msg, is_video=False)["imgs_w"] - img
+    tiled = embed_tiled(model, img, msg, tile=tile, batch=batch) - img
+    return (img + whole + tiled).clamp(0, 1)
+
+
+@torch.no_grad()
+def detect_dual(model, img: torch.Tensor, k: int, **kwargs) -> list:
+    """Reads both layers. Returns two candidates (whole image, tiled); the caller matches
+    each against its registry and must count them as two tries in its significance test."""
+    soft = collapse_logits(model.detect(img, is_video=False)["preds"][0, 1:], k)
+    whole = {"soft": soft, "bits": (soft > 0).float(), "score": float(soft.abs().mean()), "window": 0, "n_windows": 1}
+    return [whole, detect_tiled(model, img, k, **kwargs)]
